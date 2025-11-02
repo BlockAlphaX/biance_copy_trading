@@ -1,13 +1,13 @@
 #!/bin/bash
 
 # Binance Copy Trading v3.0 自动化安装脚本
-# 用途：一键创建 Web 管理界面 + 实时监控 + 策略回测
+# 用途：一键创建 Web 管理界面 + 实时监控（不含策略回测）
 
 set -e  # 遇到错误立即退出
 
 echo "=========================================="
 echo "  Binance Copy Trading v3.0 Setup"
-echo "  Web Dashboard + Monitoring + Backtest"
+echo "  Web Dashboard + Real-time Monitoring"
 echo "=========================================="
 echo ""
 
@@ -15,12 +15,18 @@ echo ""
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # 检查 Python 版本
 echo -e "${YELLOW}[1/10] 检查 Python 版本...${NC}"
-python_version=$(python3 --version 2>&1 | awk '{print $2}')
-echo "Python 版本: $python_version"
+if command -v python3 &> /dev/null; then
+    python_version=$(python3 --version 2>&1 | awk '{print $2}')
+    echo "Python 版本: $python_version"
+else
+    echo -e "${RED}错误: 未安装 Python3${NC}"
+    exit 1
+fi
 
 # 检查 Node.js 版本
 echo -e "${YELLOW}[2/10] 检查 Node.js 版本...${NC}"
@@ -29,7 +35,7 @@ if command -v node &> /dev/null; then
     echo "Node.js 版本: $node_version"
 else
     echo -e "${RED}错误: 未安装 Node.js${NC}"
-    echo "请访问 https://nodejs.org/ 安装 Node.js"
+    echo "请访问 https://nodejs.org/ 安装 Node.js 18+"
     exit 1
 fi
 
@@ -38,9 +44,8 @@ echo -e "${YELLOW}[3/10] 创建项目目录结构...${NC}"
 mkdir -p web/api/routes
 mkdir -p web/api/models
 mkdir -p web/frontend/src/{components,hooks,services,store,utils}
-mkdir -p web/frontend/src/components/{Dashboard,Trades,Accounts,Metrics,Risk,Backtest,Settings}
+mkdir -p web/frontend/src/components/{Dashboard,Trades,Accounts,Metrics,Risk,Logs,Settings}
 mkdir -p web/frontend/public
-mkdir -p backtest
 mkdir -p monitoring
 mkdir -p tests/{unit,integration,e2e}
 mkdir -p logs
@@ -48,9 +53,9 @@ mkdir -p logs
 echo -e "${GREEN}✓ 目录结构创建完成${NC}"
 
 # 安装后端依赖
-echo -e "${YELLOW}[4/10] 安装后端依赖...${NC}"
+echo -e "${YELLOW}[4/10] 创建后端依赖文件...${NC}"
 cat > requirements-web.txt << 'EOF'
-# Web 服务依赖
+# Web 服务依赖 (v3.0)
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 python-multipart==0.0.6
@@ -68,11 +73,16 @@ aiosqlite==0.19.0
 pandas==2.1.3
 numpy==1.26.2
 
+# 监控和指标
+psutil==5.9.6
+
 # 其他
 pydantic==2.5.0
 pydantic-settings==2.1.0
+python-dotenv==1.0.0
 EOF
 
+echo -e "${BLUE}安装后端依赖（这可能需要几分钟）...${NC}"
 pip install -r requirements-web.txt
 echo -e "${GREEN}✓ 后端依赖安装完成${NC}"
 
@@ -85,9 +95,10 @@ cat > package.json << 'EOF'
 {
   "name": "binance-copy-trading-dashboard",
   "version": "3.0.0",
+  "description": "Binance Futures Copy Trading Web Dashboard",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --host",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0"
@@ -104,11 +115,13 @@ cat > package.json << 'EOF'
     "socket.io-client": "^4.5.4",
     "zustand": "^4.4.7",
     "dayjs": "^1.11.10",
-    "ahooks": "^3.7.8"
+    "ahooks": "^3.7.8",
+    "lodash-es": "^4.17.21"
   },
   "devDependencies": {
     "@types/react": "^18.2.37",
     "@types/react-dom": "^18.2.15",
+    "@types/lodash-es": "^4.17.12",
     "@typescript-eslint/eslint-plugin": "^6.10.0",
     "@typescript-eslint/parser": "^6.10.0",
     "@vitejs/plugin-react": "^4.2.0",
@@ -150,6 +163,20 @@ cat > tsconfig.json << 'EOF'
 }
 EOF
 
+# 创建 tsconfig.node.json
+cat > tsconfig.node.json << 'EOF'
+{
+  "compilerOptions": {
+    "composite": true,
+    "skipLibCheck": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true
+  },
+  "include": ["vite.config.ts"]
+}
+EOF
+
 # 创建 vite.config.ts
 cat > vite.config.ts << 'EOF'
 import { defineConfig } from 'vite'
@@ -165,6 +192,7 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    host: '0.0.0.0',
     proxy: {
       '/api': {
         target: 'http://localhost:8000',
@@ -176,7 +204,43 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    outDir: 'dist',
+    sourcemap: false,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'react-vendor': ['react', 'react-dom', 'react-router-dom'],
+          'antd-vendor': ['antd', '@ant-design/icons'],
+          'chart-vendor': ['echarts', 'echarts-for-react'],
+        },
+      },
+    },
+  },
 })
+EOF
+
+# 创建 .eslintrc.cjs
+cat > .eslintrc.cjs << 'EOF'
+module.exports = {
+  root: true,
+  env: { browser: true, es2020: true },
+  extends: [
+    'eslint:recommended',
+    'plugin:@typescript-eslint/recommended',
+    'plugin:react-hooks/recommended',
+  ],
+  ignorePatterns: ['dist', '.eslintrc.cjs'],
+  parser: '@typescript-eslint/parser',
+  plugins: ['react-refresh'],
+  rules: {
+    'react-refresh/only-export-components': [
+      'warn',
+      { allowConstantExport: true },
+    ],
+    '@typescript-eslint/no-explicit-any': 'warn',
+  },
+}
 EOF
 
 echo -e "${GREEN}✓ 前端项目配置完成${NC}"
@@ -210,6 +274,9 @@ RUN pip install --no-cache-dir -r requirements.txt -r requirements-web.txt
 # 复制应用代码
 COPY . .
 
+# 创建日志目录
+RUN mkdir -p logs
+
 # 暴露端口
 EXPOSE 8000
 
@@ -231,18 +298,23 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
     restart: unless-stopped
+    networks:
+      - app-network
 
   frontend:
     image: node:18-alpine
     working_dir: /app
     volumes:
       - ./web/frontend:/app
+      - /app/node_modules
     ports:
       - "5173:5173"
     command: npm run dev
     depends_on:
       - backend
     restart: unless-stopped
+    networks:
+      - app-network
 
   nginx:
     image: nginx:alpine
@@ -250,15 +322,64 @@ services:
       - "80:80"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./web/frontend/dist:/usr/share/nginx/html:ro
     depends_on:
       - backend
-      - frontend
     restart: unless-stopped
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+EOF
+
+# 创建 nginx.conf
+cat > nginx.conf << 'EOF'
+events {
+    worker_connections 1024;
+}
+
+http {
+    upstream backend {
+        server backend:8000;
+    }
+
+    server {
+        listen 80;
+        server_name localhost;
+
+        # 前端静态文件
+        location / {
+            root /usr/share/nginx/html;
+            try_files $uri $uri/ /index.html;
+        }
+
+        # API 代理
+        location /api {
+            proxy_pass http://backend;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection 'upgrade';
+            proxy_set_header Host $host;
+            proxy_cache_bypass $http_upgrade;
+        }
+
+        # WebSocket 代理
+        location /ws {
+            proxy_pass http://backend;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "Upgrade";
+            proxy_set_header Host $host;
+        }
+    }
+}
 EOF
 
 echo -e "${GREEN}✓ Docker 配置创建完成${NC}"
 
-# 创建 .gitignore
+# 更新 .gitignore
 echo -e "${YELLOW}[8/10] 更新 .gitignore...${NC}"
 cat >> .gitignore << 'EOF'
 
@@ -271,6 +392,9 @@ logs/*.db
 __pycache__/
 .env
 .venv/
+venv/
+*.log
+.DS_Store
 EOF
 
 echo -e "${GREEN}✓ .gitignore 更新完成${NC}"
@@ -281,10 +405,23 @@ echo -e "${YELLOW}[9/10] 创建启动脚本...${NC}"
 cat > start_dev.sh << 'EOF'
 #!/bin/bash
 
-echo "启动 Binance Copy Trading v3.0 开发环境..."
+echo "=========================================="
+echo "  启动 Binance Copy Trading v3.0"
+echo "  开发环境"
+echo "=========================================="
+echo ""
+
+# 检查配置文件
+if [ ! -f "config.yaml" ]; then
+    echo "⚠️  警告: config.yaml 不存在"
+    echo "请先复制并配置："
+    echo "  cp config.example.yaml config.yaml"
+    echo "  # 编辑 config.yaml 填入 API 密钥"
+    exit 1
+fi
 
 # 启动后端
-echo "启动后端服务..."
+echo "🚀 启动后端服务..."
 python web_server.py &
 BACKEND_PID=$!
 
@@ -292,24 +429,27 @@ BACKEND_PID=$!
 sleep 3
 
 # 启动前端
-echo "启动前端服务..."
+echo "🚀 启动前端服务..."
 cd web/frontend
 npm run dev &
 FRONTEND_PID=$!
 
+cd ../..
+
 echo ""
 echo "=========================================="
-echo "  开发环境已启动"
+echo "  ✓ 开发环境已启动"
 echo "=========================================="
-echo "后端 API: http://localhost:8000"
-echo "API 文档: http://localhost:8000/docs"
-echo "前端界面: http://localhost:5173"
+echo ""
+echo "📱 前端界面: http://localhost:5173"
+echo "📚 API 文档: http://localhost:8000/docs"
+echo "🔌 WebSocket: ws://localhost:8000/ws"
 echo ""
 echo "按 Ctrl+C 停止所有服务"
 echo "=========================================="
 
 # 等待用户中断
-trap "kill $BACKEND_PID $FRONTEND_PID; exit" INT
+trap "echo ''; echo '正在停止服务...'; kill $BACKEND_PID $FRONTEND_PID 2>/dev/null; exit" INT TERM
 wait
 EOF
 
@@ -318,17 +458,48 @@ chmod +x start_dev.sh
 cat > start_prod.sh << 'EOF'
 #!/bin/bash
 
-echo "启动 Binance Copy Trading v3.0 生产环境..."
+echo "=========================================="
+echo "  启动 Binance Copy Trading v3.0"
+echo "  生产环境 (Docker)"
+echo "=========================================="
+echo ""
+
+# 检查 Docker
+if ! command -v docker &> /dev/null; then
+    echo "❌ 错误: 未安装 Docker"
+    echo "请访问 https://www.docker.com/ 安装 Docker"
+    exit 1
+fi
+
+# 检查配置文件
+if [ ! -f "config.yaml" ]; then
+    echo "⚠️  警告: config.yaml 不存在"
+    echo "请先复制并配置："
+    echo "  cp config.example.yaml config.yaml"
+    exit 1
+fi
+
+# 构建前端
+echo "📦 构建前端..."
+cd web/frontend
+npm run build
+cd ../..
+
+# 启动 Docker
+echo "🐳 启动 Docker 容器..."
 docker-compose up -d
 
 echo ""
 echo "=========================================="
-echo "  生产环境已启动"
+echo "  ✓ 生产环境已启动"
 echo "=========================================="
-echo "访问地址: http://localhost"
 echo ""
-echo "查看日志: docker-compose logs -f"
-echo "停止服务: docker-compose down"
+echo "🌐 访问地址: http://localhost"
+echo ""
+echo "📋 常用命令:"
+echo "  查看日志: docker-compose logs -f"
+echo "  停止服务: docker-compose down"
+echo "  重启服务: docker-compose restart"
 echo "=========================================="
 EOF
 
@@ -336,11 +507,22 @@ chmod +x start_prod.sh
 
 echo -e "${GREEN}✓ 启动脚本创建完成${NC}"
 
-# 创建 README
+# 创建快速开始文档
 echo -e "${YELLOW}[10/10] 创建快速开始文档...${NC}"
 
 cat > QUICKSTART_v3.md << 'EOF'
 # Binance Copy Trading v3.0 快速开始
+
+## 🎯 系统功能
+
+- ✅ Web 管理界面
+- ✅ 实时监控 Dashboard
+- ✅ 账户管理
+- ✅ 交易监控
+- ✅ 性能指标
+- ✅ 风险管理
+- ✅ 日志查看
+- ✅ 告警通知
 
 ## 🚀 开发环境
 
@@ -351,24 +533,18 @@ cat > QUICKSTART_v3.md << 'EOF'
 
 ### 启动步骤
 
-1. **安装依赖**（已完成）
-   ```bash
-   pip install -r requirements.txt -r requirements-web.txt
-   cd web/frontend && npm install
-   ```
-
-2. **配置**
+1. **配置 API 密钥**
    ```bash
    cp config.example.yaml config.yaml
-   # 编辑 config.yaml，填入 API 密钥
+   # 编辑 config.yaml，填入你的 API 密钥
    ```
 
-3. **启动开发服务器**
+2. **启动开发服务器**
    ```bash
    ./start_dev.sh
    ```
 
-4. **访问**
+3. **访问**
    - 前端: http://localhost:5173
    - API 文档: http://localhost:8000/docs
    - WebSocket: ws://localhost:8000/ws
@@ -378,50 +554,64 @@ cat > QUICKSTART_v3.md << 'EOF'
 ### 启动
 
 ```bash
-# 构建并启动
-docker-compose up -d
+# 一键启动
+./start_prod.sh
 
 # 查看日志
 docker-compose logs -f
 
-# 停止
+# 停止服务
 docker-compose down
 ```
 
 ### 访问
 - Dashboard: http://localhost
 
-## 📊 功能说明
+## 📊 页面说明
 
-### 1. 总览页面
-- 系统状态监控
+### 1. 总览页面 (`/`)
+- 系统运行状态
 - 实时交易流
-- 关键指标展示
+- 关键指标卡片
+- 账户余额概览
+- 交易量趋势图
 
-### 2. 交易监控
-- 历史交易查询
+### 2. 交易监控 (`/trades`)
+- 交易历史列表
 - 实时交易推送
 - 交易详情查看
+- 数据导出功能
 
-### 3. 账户管理
+### 3. 账户管理 (`/accounts`)
 - 主账户信息
-- 跟随账户管理
-- 杠杆和保证金设置
-
-### 4. 性能监控
-- Rate Limit 使用率
+- 跟随账户列表
+- 余额和持仓
+- 杠杆设置
 - 熔断器状态
-- 系统性能指标
 
-### 5. 风险管理
+### 4. 性能监控 (`/metrics`)
+- Rate Limit 使用率
+- 熔断器状态面板
+- 系统性能指标
+- API 响应时间
+
+### 5. 风险管理 (`/risk`)
 - 风险摘要
 - 告警列表
 - 紧急停止
+- 风险规则配置
 
-### 6. 策略回测
-- 历史数据回测
-- 性能分析
-- 策略优化
+### 6. 日志查看 (`/logs`)
+- 系统日志
+- 交易日志
+- 错误日志
+- 日志搜索和筛选
+
+### 7. 系统设置 (`/settings`)
+- 基础配置
+- 交易配置
+- 风险管理配置
+- 通知配置
 
 ## 🔧 开发指南
 
@@ -429,6 +619,7 @@ docker-compose down
 
 ```bash
 # 启动后端（热重载）
+cd /path/to/project
 uvicorn web.api.main:app --reload --port 8000
 ```
 
@@ -441,9 +632,9 @@ npm run dev
 
 ### 添加新的 API 端点
 
-1. 在 `web/api/routes/` 创建路由文件
+1. 在 `web/api/routes/` 创建或编辑路由文件
 2. 在 `web/api/main.py` 注册路由
-3. 更新 API 文档
+3. 访问 http://localhost:8000/docs 查看 API 文档
 
 ### 添加新的前端页面
 
@@ -453,24 +644,29 @@ npm run dev
 
 ## 📝 API 文档
 
-访问 http://localhost:8000/docs 查看完整的 API 文档（Swagger UI）
+访问 http://localhost:8000/docs 查看完整的 Swagger API 文档
 
 ## 🐛 故障排查
 
 ### 后端无法启动
-- 检查端口 8000 是否被占用
-- 检查 Python 依赖是否完整安装
-- 查看日志: `logs/api.log`
+- 检查端口 8000 是否被占用: `lsof -i :8000`
+- 检查 Python 依赖: `pip list | grep fastapi`
+- 查看日志: `tail -f logs/api.log`
 
 ### 前端无法访问
-- 检查 Node.js 版本
-- 重新安装依赖: `npm install`
-- 检查代理配置: `vite.config.ts`
+- 检查 Node.js 版本: `node --version`
+- 重新安装依赖: `cd web/frontend && npm install`
+- 检查端口 5173: `lsof -i :5173`
 
 ### WebSocket 连接失败
 - 检查后端是否正常运行
-- 检查防火墙设置
-- 查看浏览器控制台错误
+- 检查浏览器控制台错误
+- 确认代理配置正确
+
+### Docker 启动失败
+- 检查 Docker 是否运行: `docker ps`
+- 查看容器日志: `docker-compose logs`
+- 重新构建: `docker-compose build --no-cache`
 
 ## 📞 获取帮助
 
@@ -492,21 +688,24 @@ echo "=========================================="
 echo ""
 echo "📚 下一步："
 echo ""
-echo "1. 配置 API 密钥"
-echo "   cp config.example.yaml config.yaml"
-echo "   # 编辑 config.yaml"
+echo "1️⃣  配置 API 密钥"
+echo "   ${BLUE}cp config.example.yaml config.yaml${NC}"
+echo "   ${BLUE}# 编辑 config.yaml 填入你的 API 密钥${NC}"
 echo ""
-echo "2. 启动开发环境"
-echo "   ./start_dev.sh"
+echo "2️⃣  启动开发环境"
+echo "   ${BLUE}./start_dev.sh${NC}"
 echo ""
-echo "3. 访问 Dashboard"
-echo "   http://localhost:5173"
+echo "3️⃣  访问 Dashboard"
+echo "   ${GREEN}http://localhost:5173${NC}"
 echo ""
-echo "4. 查看 API 文档"
-echo "   http://localhost:8000/docs"
+echo "4️⃣  查看 API 文档"
+echo "   ${GREEN}http://localhost:8000/docs${NC}"
 echo ""
 echo "📖 详细文档："
-echo "   - ROADMAP_v3.md - 完整开发计划"
-echo "   - QUICKSTART_v3.md - 快速开始指南"
+echo "   - ${BLUE}ROADMAP_v3.md${NC} - 完整开发计划"
+echo "   - ${BLUE}QUICKSTART_v3.md${NC} - 快速开始指南"
 echo ""
 echo "=========================================="
+echo ""
+echo "💡 提示: 使用 ${YELLOW}./start_prod.sh${NC} 启动生产环境（Docker）"
+echo ""

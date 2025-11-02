@@ -11,7 +11,7 @@
 ### 1.1 基础架构
 - [ ] 创建 FastAPI 应用 (`web/api/main.py`)
 - [ ] 实现 CORS 中间件
-- [ ] 添加认证中间件（JWT Token）
+- [x] 添加认证中间件（JWT Token）
 - [ ] 实现 WebSocket 支持（实时数据推送）
 - [ ] 配置日志和错误处理
 
@@ -35,13 +35,13 @@
 - [ ] `GET /api/trades/recent` - 获取最近交易
 - [ ] `GET /api/trades/history` - 获取历史交易（分页）
 - [ ] `GET /api/trades/stats` - 获取交易统计
-- [ ] `WS /ws/trades` - 实时交易推送
+- [x] `WS /ws/trades` - 实时交易推送
 
 #### 性能监控
 - [ ] `GET /api/metrics/rate-limit` - Rate limit 统计
 - [ ] `GET /api/metrics/circuit-breaker` - 熔断器状态
 - [ ] `GET /api/metrics/performance` - 性能指标
-- [ ] `WS /ws/metrics` - 实时指标推送
+- [x] `WS /ws/metrics` - 实时指标推送
 
 #### 风险管理
 - [ ] `GET /api/risk/summary` - 风险摘要

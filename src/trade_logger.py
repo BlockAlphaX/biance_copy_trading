@@ -2,10 +2,13 @@
 
 import json
 import logging
+import hashlib
+from collections import deque
 from pathlib import Path
-from datetime import datetime
-from typing import Dict, Any, Optional
+from datetime import datetime, timezone
+from typing import Dict, Any, Optional, Iterable, List
 from threading import Lock
+from uuid import uuid4
 
 
 logger = logging.getLogger(__name__)
@@ -148,6 +151,23 @@ class TradeLogger:
         
         self._write_record(record)
     
+    def _ensure_record_id(self, record: Dict[str, Any]) -> str:
+        """Ensure each record has a stable identifier."""
+        record_id = record.get('id')
+        if record_id:
+            return record_id
+        
+        # Use uuid for new entries while keeping deterministic fallback for legacy rows
+        deterministic_source = json.dumps(
+            {k: record[k] for k in sorted(record.keys()) if k != 'id'},
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str
+        )
+        record_id = hashlib.sha1(deterministic_source.encode('utf-8')).hexdigest()[:12]
+        record['id'] = record_id
+        return record_id
+    
     def _write_record(self, record: Dict[str, Any]) -> None:
         """
         Write a record to the log file.
@@ -157,12 +177,58 @@ class TradeLogger:
         """
         with self.lock:
             try:
+                if 'id' not in record:
+                    record = dict(record)
+                    record['id'] = uuid4().hex[:12]
                 with open(self.log_file, 'a', encoding='utf-8') as f:
                     f.write(json.dumps(record, ensure_ascii=False) + '\n')
             except Exception as e:
                 logger.error(f"Failed to write trade log: {e}")
     
-    def get_recent_trades(self, count: int = 100) -> list:
+    def _load_records(
+        self,
+        limit: Optional[int] = None,
+        record_types: Optional[Iterable[str]] = None
+    ) -> List[Dict[str, Any]]:
+        """Load records from the log file with optional filtering."""
+        if not self.log_file.exists():
+            return []
+        
+        records: Iterable[Dict[str, Any]]
+        buffer: Iterable
+        if limit is not None:
+            buffer = deque(maxlen=limit)
+        else:
+            buffer = []
+        
+        try:
+            with open(self.log_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    try:
+                        record = json.loads(line.strip())
+                    except json.JSONDecodeError:
+                        continue
+                    
+                    self._ensure_record_id(record)
+                    
+                    if record_types and record.get('type') not in record_types:
+                        continue
+                    
+                    if isinstance(buffer, deque):
+                        buffer.append(record)
+                    else:
+                        buffer.append(record)
+        except Exception as e:
+            logger.error(f"Failed to load trade records: {e}")
+            return []
+        
+        if isinstance(buffer, deque):
+            records = list(buffer)
+        else:
+            records = list(buffer)
+        return records
+    
+    def get_recent_trades(self, count: int = 100) -> List[Dict[str, Any]]:
         """
         Get recent trades from log file.
         
@@ -172,26 +238,48 @@ class TradeLogger:
         Returns:
             List of trade records
         """
-        trades = []
+        records = self._load_records(limit=count, record_types={'master', 'follower'})
+        # Return newest first
+        records.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+        return records
+    
+    def get_all_trades(self) -> List[Dict[str, Any]]:
+        """Return all trade records (master and follower) sorted by timestamp."""
+        records = self._load_records(record_types={'master', 'follower'})
+        records.sort(key=lambda x: x.get('timestamp', ''))
+        return records
+    
+    def get_trade_by_id(self, trade_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a trade record by its identifier."""
+        if not self.log_file.exists():
+            return None
         
         try:
-            if not self.log_file.exists():
-                return trades
-            
             with open(self.log_file, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-                
-            # Get last N lines
-            for line in lines[-count:]:
-                try:
-                    trades.append(json.loads(line.strip()))
-                except json.JSONDecodeError:
-                    continue
+                for line in f:
+                    try:
+                        record = json.loads(line.strip())
+                    except json.JSONDecodeError:
+                        continue
                     
+                    if record.get('id') == trade_id:
+                        return record
+                    
+                    # Legacy rows might not have ID persisted
+                    if not record.get('id'):
+                        self._ensure_record_id(record)
+                        if record['id'] == trade_id:
+                            return record
         except Exception as e:
-            logger.error(f"Failed to read trade log: {e}")
+            logger.error(f"Failed to read trade by id: {e}")
         
-        return trades
+        return None
+    
+    def get_records_by_type(self, record_type: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Return records filtered by type."""
+        records = self._load_records(limit=limit, record_types={record_type})
+        records.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+        return records
     
     def get_statistics(self, hours: int = 24) -> Dict[str, Any]:
         """
@@ -205,11 +293,13 @@ class TradeLogger:
         """
         from datetime import timedelta
         
-        cutoff_time = datetime.now() - timedelta(hours=hours)
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
         
         stats = {
             'master_trades': 0,
             'follower_trades': 0,
+            'follower_success': 0,
+            'follower_failed': 0,
             'errors': 0,
             'total_volume': 0.0,
             'symbols': set(),
@@ -224,28 +314,51 @@ class TradeLogger:
                 for line in f:
                     try:
                         record = json.loads(line.strip())
-                        record_time = datetime.fromisoformat(record['timestamp'])
-                        
-                        if record_time < cutoff_time:
-                            continue
-                        
-                        if record['type'] == 'master':
-                            stats['master_trades'] += 1
-                            stats['total_volume'] += record.get('notional', 0)
-                            stats['symbols'].add(record['symbol'])
-                            
-                        elif record['type'] == 'follower':
-                            stats['follower_trades'] += 1
-                            stats['followers'].add(record['follower_name'])
-                            if 'notional' in record:
-                                stats['total_volume'] += record['notional']
-                                
-                        elif record['type'] == 'error':
-                            stats['errors'] += 1
-                            
-                    except (json.JSONDecodeError, KeyError, ValueError):
+                    except json.JSONDecodeError:
                         continue
+                    
+                    try:
+                        record_time = datetime.fromisoformat(record['timestamp'])
+                    except (KeyError, ValueError, TypeError):
+                        continue
+                    
+                    if record_time.tzinfo is None:
+                        record_time = record_time.replace(tzinfo=timezone.utc)
+                    else:
+                        record_time = record_time.astimezone(timezone.utc)
+                    
+                    if record_time < cutoff_time:
+                        continue
+                    
+                    record_type = record.get('type')
+                    
+                    if record_type == 'master':
+                        stats['master_trades'] += 1
+                        stats['total_volume'] += record.get('notional', 0.0)
+                        symbol = record.get('symbol')
+                        if symbol:
+                            stats['symbols'].add(symbol)
+                    
+                    elif record_type == 'follower':
+                        stats['follower_trades'] += 1
+                        status = (record.get('status') or '').upper()
+                        if status in {'FILLED', 'PARTIALLY_FILLED', 'SUCCESS'}:
+                            stats['follower_success'] += 1
+                        elif status in {'CANCELLED', 'REJECTED', 'FAILED'} or record.get('error'):
+                            stats['follower_failed'] += 1
                         
+                        follower_name = record.get('follower_name')
+                        if follower_name:
+                            stats['followers'].add(follower_name)
+                        
+                        if 'notional' in record:
+                            stats['total_volume'] += record['notional']
+                    
+                    elif record_type == 'error':
+                        stats['errors'] += 1
+                        follower_name = record.get('follower_name')
+                        if follower_name:
+                            stats['followers'].add(follower_name)
         except Exception as e:
             logger.error(f"Failed to calculate statistics: {e}")
         

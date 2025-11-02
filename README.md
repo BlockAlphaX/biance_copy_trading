@@ -51,6 +51,40 @@
 pip install -r requirements.txt
 ```
 
+## 🌐 Web 管理 API (v3)
+
+新版 Web 控制台基于 FastAPI 与 React 构建，默认使用 SQLite 数据库存储账户、交易、风险告警等运行数据。
+
+### 安装依赖
+
+```bash
+pip install -r requirements.txt
+pip install -r requirements-web.txt
+```
+
+### 配置认证
+
+FastAPI 接口和 WebSocket 统一使用 JWT 鉴权，启动前请设置密钥：
+
+```bash
+export API_JWT_SECRET="请替换为随机字符串"
+```
+
+可以通过以下命令快速生成访问令牌：
+
+```bash
+python -c "from web.api.auth import create_access_token; print(create_access_token('admin'))"
+```
+
+### 启动 API 服务
+
+```bash
+uvicorn web.api.main:app --host 0.0.0.0 --port 8000
+```
+
+应用在启动时会自动初始化数据库（默认路径 `data/app.db`，可通过环境变量 `DB_DATABASE_URL` 覆盖）。
+首次部署或更新后，可通过 `alembic upgrade head` 应用最新迁移，`deploy.sh` 会自动完成该步骤。
+
 ### 2. 配置
 
 复制配置文件模板：
@@ -110,6 +144,10 @@ binance_copy_trading/
 ├── requirements.txt                   # Python 依赖
 ├── README.md                          # 项目文档
 ├── CHANGELOG.md                       # 更新日志
+├── deploy.sh                          # 一键部署脚本（含 Alembic 迁移）
+├── alembic.ini                        # Alembic 配置
+├── migrations/                        # 数据库迁移脚本
+├── web/                               # Web API & 前端源码
 └── src/
     ├── binance_futures_client.py      # Futures API 客户端
     ├── futures_copy_trade_engine.py   # 跟单引擎核心

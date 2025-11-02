@@ -24,6 +24,7 @@
     "ahooks": "^3.7.8",
     "lodash-es": "^4.17.21"
   },
+  "proxy": "http://localhost:8000",
   "devDependencies": {
     "@types/react": "^18.2.37",
     "@types/react-dom": "^18.2.15",

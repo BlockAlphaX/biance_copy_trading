@@ -1,5 +1,66 @@
 # 更新日志
 
+## [2.1.0] - 2024-11-02
+
+### 🚀 生产级优化
+
+#### ✨ 新增功能
+
+1. **Rate Limit 权重追踪** ⭐⭐⭐
+   - 实时追踪 API 权重使用情况
+   - 自动从响应头更新权重
+   - 接近限制时自动等待
+   - 支持 80% 安全阈值
+   - 详细的统计信息
+
+2. **熔断器模式** ⭐⭐⭐
+   - 为每个 follower 独立熔断器
+   - 三种状态：CLOSED/OPEN/HALF_OPEN
+   - 连续失败后自动熔断
+   - 超时后自动尝试恢复
+   - 防止级联故障
+
+3. **交易记录持久化** ⭐⭐
+   - JSONL 格式存储所有交易
+   - 记录主账户和跟随账户交易
+   - 记录错误和异常
+   - 支持查询最近交易
+   - 支持统计分析
+
+4. **增强的统计信息**
+   - 熔断器状态和成功率
+   - Rate limit 使用率和等待时间
+   - 更详细的错误分类
+
+#### 🔧 技术改进
+
+- 所有 API 调用添加权重参数
+- 优化并发安全机制
+- 改进错误处理和日志
+- 添加性能监控指标
+
+#### 📝 配置更新
+
+新增配置项：
+```yaml
+advanced:
+  rate_limit:
+    enabled: true
+    weight_limit: 2400
+    safety_margin: 0.8
+  
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5
+    timeout: 300
+  
+  trade_logging:
+    enabled: true
+    log_file: "logs/futures_trades.jsonl"
+```
+
+---
+
 ## [2.0.0] - 2024-11-02
 
 ### 🚀 重大更新 - 专注合约交易

@@ -12,6 +12,8 @@ import websocket
 
 from .binance_futures_client import BinanceFuturesClient, BinanceAPIError, PositionSide, MarginType
 from .config_loader import Config
+from .circuit_breaker import CircuitBreakerManager
+from .trade_logger import TradeLogger
 
 
 logger = logging.getLogger(__name__)
@@ -72,6 +74,18 @@ class FuturesCopyTradeEngine:
         self.follower_balance_locks: Dict[str, Lock] = {
             name: Lock() for name in self.follower_clients.keys()
         }
+        
+        # Circuit breakers for each follower
+        self.circuit_breaker_manager = CircuitBreakerManager()
+        for name in self.follower_clients.keys():
+            self.circuit_breaker_manager.get_breaker(
+                name=f"follower_{name}",
+                failure_threshold=5,
+                timeout=300  # 5 minutes
+            )
+        
+        # Trade logger for persistence
+        self.trade_logger = TradeLogger(log_file="logs/futures_trades.jsonl")
         
         # Statistics
         self.stats = {
@@ -385,6 +399,17 @@ class FuturesCopyTradeEngine:
         
         self.stats['total_trades'] += 1
         
+        # Log master trade
+        self.trade_logger.log_master_trade(
+            symbol=symbol,
+            side=side,
+            quantity=last_exec_qty,
+            price=last_exec_price,
+            position_side=position_side,
+            order_id=order_id,
+            trade_id=trade_id
+        )
+        
         # Replicate to followers
         self._replicate_to_followers(symbol, side, last_exec_qty, last_exec_price, position_side)
 
@@ -486,6 +511,17 @@ class FuturesCopyTradeEngine:
             logger.error(f"Follower client not found: {follower_name}")
             return
         
+        # Get circuit breaker for this follower
+        breaker = self.circuit_breaker_manager.get_breaker(f"follower_{follower_name}")
+        
+        # Check circuit breaker state
+        try:
+            breaker.call(lambda: None)  # Test if circuit is open
+        except Exception as e:
+            logger.error(f"✗ Follower '{follower_name}': Circuit breaker is OPEN - {e}")
+            self.stats['failed_copies'] += 1
+            return
+        
         # Use balance lock for concurrent safety
         with self.follower_balance_locks[follower_name]:
             order_type = self.config.trading.follower_order_type
@@ -549,24 +585,46 @@ class FuturesCopyTradeEngine:
                            f"orderId={order_id}, status={status}, positionSide={position_side}")
                 
                 self.stats['successful_copies'] += 1
+                breaker._on_success()  # Notify circuit breaker of success
+                
+                # Log follower trade
+                self.trade_logger.log_follower_trade(
+                    follower_name=follower_name,
+                    symbol=symbol,
+                    side=side,
+                    quantity=quantity,
+                    price=price if order_type == 'LIMIT' else None,
+                    position_side=position_side,
+                    order_type=order_type,
+                    status=status,
+                    order_id=order_id
+                )
                 
             except ValueError as e:
                 logger.error(f"✗ Follower '{follower_name}': Invalid parameters - {e}")
                 self.stats['failed_copies'] += 1
+                breaker._on_failure(e)  # Notify circuit breaker of failure
+                self.trade_logger.log_error(follower_name, symbol, 'validation', str(e))
             except BinanceAPIError as e:
                 error_str = str(e)
                 if 'insufficient balance' in error_str.lower():
                     logger.error(f"✗ Follower '{follower_name}': Insufficient balance")
                     self.stats['insufficient_balance'] += 1
+                    self.trade_logger.log_error(follower_name, symbol, 'insufficient_balance', error_str)
                 elif 'min notional' in error_str.lower():
                     logger.error(f"✗ Follower '{follower_name}': Order value too small (MIN_NOTIONAL)")
                     self.stats['min_notional_rejected'] += 1
+                    self.trade_logger.log_error(follower_name, symbol, 'min_notional', error_str)
                 else:
                     logger.error(f"✗ Follower '{follower_name}': API error - {e}")
+                    self.trade_logger.log_error(follower_name, symbol, 'api_error', error_str)
                 self.stats['failed_copies'] += 1
+                breaker._on_failure(e)  # Notify circuit breaker of failure
             except Exception as e:
                 logger.error(f"✗ Follower '{follower_name}': Unexpected error - {e}", exc_info=True)
                 self.stats['failed_copies'] += 1
+                breaker._on_failure(e)  # Notify circuit breaker of failure
+                self.trade_logger.log_error(follower_name, symbol, 'unexpected', str(e))
 
     def _print_statistics(self) -> None:
         """Print trading statistics."""
@@ -587,6 +645,23 @@ class FuturesCopyTradeEngine:
             if total_attempts > 0:
                 success_rate = (self.stats['successful_copies'] / total_attempts) * 100
                 logger.info(f"Success rate: {success_rate:.2f}%")
+            
+            # Circuit breaker statistics
+            logger.info("-" * 60)
+            logger.info("Circuit Breaker Status:")
+            for name, stats in self.circuit_breaker_manager.get_all_statistics().items():
+                logger.info(f"  {name}: {stats['state']} (success_rate: {stats['success_rate']:.1f}%)")
+            
+            # Rate limit statistics
+            logger.info("-" * 60)
+            logger.info("Rate Limit Statistics:")
+            rate_stats = self.master_client.get_rate_limit_stats()
+            logger.info(f"  Total requests: {rate_stats['total_requests']}")
+            logger.info(f"  Current weight: {rate_stats['current_weight']}/{rate_stats['effective_limit']}")
+            logger.info(f"  Utilization: {rate_stats['utilization']:.1f}%")
+            if rate_stats['wait_count'] > 0:
+                logger.info(f"  Wait count: {rate_stats['wait_count']}")
+                logger.info(f"  Total wait time: {rate_stats['total_wait_time']:.2f}s")
             
             logger.info("=" * 60)
 

@@ -142,3 +142,20 @@ advanced:
   retry_failed_orders: false
   retry_attempts: 3
   retry_delay: 2  # seconds
+  
+  # Rate limiting (v2.1+)
+  rate_limit:
+    enabled: true
+    weight_limit: 2400  # Binance Futures: 2400 weight per minute
+    safety_margin: 0.8  # Use 80% of limit for safety
+  
+  # Circuit breaker (v2.1+)
+  circuit_breaker:
+    enabled: true
+    failure_threshold: 5  # Open circuit after N failures
+    timeout: 300  # Seconds to wait before retry (5 minutes)
+  
+  # Trade logging (v2.1+)
+  trade_logging:
+    enabled: true
+    log_file: "logs/futures_trades.jsonl"

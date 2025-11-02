@@ -21,7 +21,7 @@
 - 🔌 **自动重连** - WebSocket 断线自动重连
 - 📝 **详细日志** - 完整的交易记录和统计
 
-### 🚀 高级功能（v2.0 增强版）
+### 🚀 高级功能（v2.1 生产级）
 - ✅ **余额检查** - 下单前自动检查账户余额，支持并发安全
 - ✅ **MIN_NOTIONAL 验证** - 所有订单类型（包括MARKET）都验证最小金额
 - ✅ **精度处理** - 自动处理价格和数量精度（LOT_SIZE, PRICE_FILTER）
@@ -32,6 +32,10 @@
 - ✅ **部分成交** - 正确处理部分成交情况
 - ✅ **时间同步** - 强制时间同步，失败后自动重试
 - ✅ **并发安全** - 多账户并发下单时的余额锁保护
+- 🆕 **Rate Limit 管理** - 实时追踪 API 权重，自动限流
+- 🆕 **熔断器模式** - 连续失败后自动熔断，防止级联故障
+- 🆕 **交易记录持久化** - JSONL 格式记录所有交易和错误
+- 🆕 **增强统计** - 熔断器状态、Rate limit 使用率等
 
 ## 📋 系统要求
 
@@ -109,6 +113,9 @@ binance_copy_trading/
 └── src/
     ├── binance_futures_client.py      # Futures API 客户端
     ├── futures_copy_trade_engine.py   # 跟单引擎核心
+    ├── rate_limiter.py                # Rate limit 管理器 (v2.1)
+    ├── circuit_breaker.py             # 熔断器 (v2.1)
+    ├── trade_logger.py                # 交易记录持久化 (v2.1)
     ├── config_loader.py               # 配置加载器
     └── logger.py                      # 日志系统
 ```

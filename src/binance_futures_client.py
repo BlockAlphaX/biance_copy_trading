@@ -11,6 +11,8 @@ from enum import Enum
 
 import requests
 
+from .rate_limiter import RateLimiter
+
 
 logger = logging.getLogger(__name__)
 
@@ -67,10 +69,15 @@ class BinanceFuturesClient:
         self.time_offset = 0
         self._sync_time()
         
-        # Rate limiting
+        # Rate limiting with weight tracking
+        self.rate_limiter = RateLimiter(
+            weight_limit=2400,  # Binance Futures: 2400 weight per minute
+            window_seconds=60,
+            safety_margin=0.8  # Use 80% of limit for safety
+        )
         self.request_lock = Lock()
         self.last_request_time = 0
-        self.min_request_interval = 0.05  # 50ms
+        self.min_request_interval = 0.05  # 50ms between requests
         
         # Cache
         self._symbol_info_cache: Dict[str, Dict[str, Any]] = {}
@@ -119,8 +126,20 @@ class BinanceFuturesClient:
         params['signature'] = signature
         return params
 
-    def _request(self, method: str, endpoint: str, signed: bool = False, **kwargs) -> Dict[str, Any]:
-        """Make HTTP request to Binance Futures API."""
+    def _request(self, method: str, endpoint: str, signed: bool = False, weight: int = 1, **kwargs) -> Dict[str, Any]:
+        """
+        Make HTTP request to Binance Futures API with rate limiting.
+        
+        Args:
+            method: HTTP method
+            endpoint: API endpoint
+            signed: Whether to sign the request
+            weight: API weight of this request (default: 1)
+            **kwargs: Additional request parameters
+            
+        Returns:
+            JSON response
+        """
         url = f"{self.base_url}{endpoint}"
         
         if signed:
@@ -131,7 +150,9 @@ class BinanceFuturesClient:
             params = self._sign_params(params)
             kwargs['params'] = params
         
-        # Rate limiting
+        # Rate limiting with weight tracking
+        self.rate_limiter.wait_if_needed(weight)
+        
         with self.request_lock:
             elapsed = time.time() - self.last_request_time
             if elapsed < self.min_request_interval:
@@ -145,6 +166,10 @@ class BinanceFuturesClient:
             try:
                 response = self.session.request(method, url, timeout=10, **kwargs)
                 response.raise_for_status()
+                
+                # Update rate limiter from response headers
+                self.rate_limiter.update_from_response(response.headers)
+                
                 return response.json()
             except requests.exceptions.HTTPError as e:
                 error_msg = f"HTTP error: {e}"
@@ -175,7 +200,7 @@ class BinanceFuturesClient:
 
     def get_account_info(self) -> Dict[str, Any]:
         """Get current account information including balances and positions."""
-        return self._request('GET', '/fapi/v2/account', signed=True)
+        return self._request('GET', '/fapi/v2/account', signed=True, weight=5)
 
     def get_balance(self, asset: str = "USDT") -> Decimal:
         """
@@ -244,7 +269,7 @@ class BinanceFuturesClient:
         }
         
         logger.info(f"Setting leverage for {symbol}: {leverage}x")
-        result = self._request('POST', '/fapi/v1/leverage', signed=True, params=params)
+        result = self._request('POST', '/fapi/v1/leverage', signed=True, weight=1, params=params)
         logger.info(f"Leverage set successfully: {leverage}x")
         
         return result
@@ -268,7 +293,7 @@ class BinanceFuturesClient:
         logger.info(f"Setting margin type for {symbol}: {margin_type.value}")
         
         try:
-            result = self._request('POST', '/fapi/v1/marginType', signed=True, params=params)
+            result = self._request('POST', '/fapi/v1/marginType', signed=True, weight=1, params=params)
             logger.info(f"Margin type set successfully: {margin_type.value}")
             return result
         except BinanceAPIError as e:
@@ -294,7 +319,7 @@ class BinanceFuturesClient:
         logger.info(f"Setting position mode: {mode}")
         
         try:
-            result = self._request('POST', '/fapi/v1/positionSide/dual', signed=True, params=params)
+            result = self._request('POST', '/fapi/v1/positionSide/dual', signed=True, weight=1, params=params)
             logger.info(f"Position mode set successfully: {mode}")
             return result
         except BinanceAPIError as e:
@@ -312,7 +337,7 @@ class BinanceFuturesClient:
         if symbol:
             params['symbol'] = symbol
         
-        return self._request('GET', '/fapi/v1/exchangeInfo', params=params)
+        return self._request('GET', '/fapi/v1/exchangeInfo', weight=1, params=params)
 
     def get_symbol_info(self, symbol: str) -> Dict[str, Any]:
         """
@@ -502,7 +527,7 @@ class BinanceFuturesClient:
         logger.info(f"Placing {side} {order_type} order: {adjusted_qty} {symbol}" + 
                    (f" @ {params.get('price')}" if price else ""))
         
-        result = self._request('POST', '/fapi/v1/order', signed=True, params=params)
+        result = self._request('POST', '/fapi/v1/order', signed=True, weight=1, params=params)
         
         logger.info(f"Order placed: orderId={result.get('orderId')}, status={result.get('status')}")
         
@@ -544,7 +569,7 @@ class BinanceFuturesClient:
         }
         
         logger.info(f"Placing batch order: {len(batch_orders)} orders")
-        result = self._request('POST', '/fapi/v1/batchOrders', signed=True, params=params)
+        result = self._request('POST', '/fapi/v1/batchOrders', signed=True, weight=5, params=params)
         logger.info(f"Batch order placed successfully")
         
         return result
@@ -554,7 +579,7 @@ class BinanceFuturesClient:
     def create_listen_key(self) -> str:
         """Create a user data stream listenKey."""
         logger.info("Creating new listen key")
-        data = self._request('POST', '/fapi/v1/listenKey')
+        data = self._request('POST', '/fapi/v1/listenKey', weight=1)
         listen_key = data['listenKey']
         logger.info(f"Listen key created: {listen_key[:8]}...")
         return listen_key
@@ -562,23 +587,29 @@ class BinanceFuturesClient:
     def keepalive_listen_key(self, listen_key: str) -> None:
         """Keep the user data stream alive."""
         logger.debug(f"Keeping listen key alive: {listen_key[:8]}...")
-        self._request('PUT', '/fapi/v1/listenKey')
+        self._request('PUT', '/fapi/v1/listenKey', weight=1)
 
     def close_listen_key(self, listen_key: str) -> None:
         """Close a user data stream."""
         logger.info(f"Closing listen key: {listen_key[:8]}...")
-        self._request('DELETE', '/fapi/v1/listenKey')
+        self._request('DELETE', '/fapi/v1/listenKey', weight=1)
 
     # ==================== Market Data ====================
 
     def get_ticker_price(self, symbol: str) -> Decimal:
         """Get current market price for a symbol."""
         params = {'symbol': symbol}
-        result = self._request('GET', '/fapi/v1/ticker/price', params=params)
+        result = self._request('GET', '/fapi/v1/ticker/price', weight=1, params=params)
         return Decimal(result['price'])
 
     def get_mark_price(self, symbol: str) -> Decimal:
         """Get current mark price for a symbol."""
         params = {'symbol': symbol}
-        result = self._request('GET', '/fapi/v1/premiumIndex', params=params)
+        result = self._request('GET', '/fapi/v1/premiumIndex', weight=1, params=params)
         return Decimal(result['markPrice'])
+    
+    # ==================== Statistics ====================
+    
+    def get_rate_limit_stats(self) -> Dict[str, any]:
+        """Get rate limiter statistics."""
+        return self.rate_limiter.get_statistics()

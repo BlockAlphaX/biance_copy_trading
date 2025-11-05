@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  # Main application
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: binance-copy-trading
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config.futures.yaml:/app/config.futures.yaml:ro
+      - ./logs:/app/logs
+      - ./data:/app/data
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=INFO
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/api/status')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - app-network
+
+  # Optional: PostgreSQL database (if needed for production)
+  # postgres:
+  #   image: postgres:15-alpine
+  #   container_name: binance-db
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_DB: binance_trading
+  #     POSTGRES_USER: trading_user
+  #     POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+  #   volumes:
+  #     - postgres-data:/var/lib/postgresql/data
+  #   networks:
+  #     - app-network
+
+  # Optional: Redis for caching
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: binance-redis
+  #   restart: unless-stopped
+  #   volumes:
+  #     - redis-data:/data
+  #   networks:
+  #     - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
